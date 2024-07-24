@@ -24,6 +24,7 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 	cmdtesting "k8s.io/kubectl/pkg/cmd/testing"
+	"k8s.io/utils/ptr"
 )
 
 func TestAPIResourcesComplete(t *testing.T) {
@@ -64,7 +65,7 @@ func TestAPIResourcesValidate(t *testing.T) {
 		{
 			name: "invalid output",
 			optionSetupFn: func(o *APIResourceOptions) {
-				o.Output = "foo"
+				o.PrintFlags.OutputFormat = ptr.To("foo")
 			},
 			expectedError: "--output foo is not available",
 		},
@@ -212,6 +213,77 @@ bazzes.somegroup
 			expectedInvalidations: 1,
 		},
 		{
+			name: "output json",
+			commandSetupFn: func(cmd *cobra.Command) {
+				cmd.Flags().Set("output", "json")
+			},
+			expectedOutput: `{
+	"kind": "v1",
+	"apiVersion": "APIResourceList",
+	"groupVersion": "",
+	"resources": [
+		{
+			"name": "foos",
+			"singularName": "",
+			"namespaced": false,
+			"kind": "Foo",
+			"verbs": [
+				"get",
+				"list"
+			],
+			"shortNames": [
+				"f",
+				"fo"
+			],
+			"categories": [
+				"some-category"
+			]
+		},
+		{
+			"name": "bars",
+			"singularName": "",
+			"namespaced": true,
+			"kind": "Bar",
+			"verbs": [
+				"get",
+				"list",
+				"create"
+			]
+		},
+		{
+			"name": "bazzes",
+			"singularName": "",
+			"namespaced": true,
+			"kind": "Baz",
+			"verbs": [
+				"get",
+				"list",
+				"create",
+				"delete"
+			],
+			"shortNames": [
+				"b"
+			],
+			"categories": [
+				"some-category",
+				"another-category"
+			]
+		},
+		{
+			"name": "NoVerbs",
+			"singularName": "",
+			"namespaced": true,
+			"kind": "NoVerbs",
+			"verbs": [],
+			"shortNames": [
+				"b"
+			]
+		}
+	]
+}
+`,
+		},
+		{
 			name: "namespaced",
 			commandSetupFn: func(cmd *cobra.Command) {
 				cmd.Flags().Set("namespaced", "true")
@@ -303,6 +375,7 @@ bazzes   b            somegroup/v1   true         Baz
 	}
 
 	for _, tc := range testCases {
+		resources = []groupResource{} // clean the package level variable to avoid stacking up of resources
 		t.Run(tc.name, func(tt *testing.T) {
 			dc.Invalidations = 0
 			ioStreams, _, out, errOut := genericiooptions.NewTestIOStreams()

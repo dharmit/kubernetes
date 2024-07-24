@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/cobra"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -58,10 +59,11 @@ var (
 		kubectl api-resources --api-group=rbac.authorization.k8s.io`)
 )
 
+var resources []groupResource
+
 // APIResourceOptions is the start of the data required to perform the operation.
 // As new fields are added, add them here instead of referencing the cmd.Flags()
 type APIResourceOptions struct {
-	Output     string
 	SortBy     string
 	APIGroup   string
 	Namespaced bool
@@ -69,11 +71,13 @@ type APIResourceOptions struct {
 	NoHeaders  bool
 	Cached     bool
 	Categories []string
+	PrintFlags *PrintFlags
 
 	groupChanged bool
 	nsChanged    bool
 
 	discoveryClient discovery.CachedDiscoveryInterface
+	PrintObj        printers.ResourcePrinterFunc
 
 	genericiooptions.IOStreams
 }
@@ -90,6 +94,7 @@ func NewAPIResourceOptions(ioStreams genericiooptions.IOStreams) *APIResourceOpt
 	return &APIResourceOptions{
 		IOStreams:  ioStreams,
 		Namespaced: true,
+		PrintFlags: NewPrintFlags(),
 	}
 }
 
@@ -110,7 +115,7 @@ func NewCmdAPIResources(restClientGetter genericclioptions.RESTClientGetter, ioS
 	}
 
 	cmd.Flags().BoolVar(&o.NoHeaders, "no-headers", o.NoHeaders, "When using the default or custom-column output format, don't print headers (default print headers).")
-	cmd.Flags().StringVarP(&o.Output, "output", "o", o.Output, `Output format. One of: (wide, name).`)
+	o.PrintFlags.AddFlags(cmd)
 
 	cmd.Flags().StringVar(&o.APIGroup, "api-group", o.APIGroup, "Limit to resources in the specified API group.")
 	cmd.Flags().BoolVar(&o.Namespaced, "namespaced", o.Namespaced, "If false, non-namespaced resources will be returned, otherwise returning namespaced resources by default.")
@@ -123,9 +128,9 @@ func NewCmdAPIResources(restClientGetter genericclioptions.RESTClientGetter, ioS
 
 // Validate checks to the APIResourceOptions to see if there is sufficient information run the command
 func (o *APIResourceOptions) Validate() error {
-	supportedOutputTypes := sets.NewString("", "wide", "name")
-	if !supportedOutputTypes.Has(o.Output) {
-		return fmt.Errorf("--output %v is not available", o.Output)
+	supportedOutputTypes := sets.NewString("", "wide", "name", "json", "yaml")
+	if o.PrintFlags.OutputFormat != nil && !supportedOutputTypes.Has(*o.PrintFlags.OutputFormat) {
+		return fmt.Errorf("--output %v is not available", *o.PrintFlags.OutputFormat)
 	}
 	supportedSortTypes := sets.NewString("", "name", "kind")
 	if len(o.SortBy) > 0 {
@@ -151,6 +156,23 @@ func (o *APIResourceOptions) Complete(restClientGetter genericclioptions.RESTCli
 	o.groupChanged = cmd.Flags().Changed("api-group")
 	o.nsChanged = cmd.Flags().Changed("namespaced")
 
+	var printer printers.ResourcePrinter
+	if o.PrintFlags.OutputFormat != nil && len(*o.PrintFlags.OutputFormat) > 0 {
+		if *o.PrintFlags.OutputFormat == "json" || *o.PrintFlags.OutputFormat == "yaml" {
+			printer, err = o.PrintFlags.ToPrinter()
+			if err != nil {
+				return err
+			}
+		} else {
+			printer = NewAPIResourcesPrinter(*o.PrintFlags.OutputFormat, o.NoHeaders)
+		}
+	} else {
+		printer = NewAPIResourcesPrinter("", o.NoHeaders)
+	}
+
+	o.PrintObj = func(object runtime.Object, out io.Writer) error {
+		return printer.PrintObj(object, out)
+	}
 	return nil
 }
 
@@ -170,7 +192,15 @@ func (o *APIResourceOptions) RunAPIResources() error {
 		errs = append(errs, err)
 	}
 
-	resources := []groupResource{}
+	rl := &metav1.APIResourceList{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "v1",
+			APIVersion: "APIResourceList",
+		},
+	}
+	for _, r := range lists {
+		rl.APIResources = append(rl.APIResources, r.APIResources...)
+	}
 
 	for _, list := range lists {
 		if len(list.APIResources) == 0 {
@@ -208,44 +238,9 @@ func (o *APIResourceOptions) RunAPIResources() error {
 		}
 	}
 
-	if o.NoHeaders == false && o.Output != "name" {
-		if err = printContextHeaders(w, o.Output); err != nil {
-			return err
-		}
-	}
-
 	sort.Stable(sortableResource{resources, o.SortBy})
-	for _, r := range resources {
-		switch o.Output {
-		case "name":
-			name := r.APIResource.Name
-			if len(r.APIGroup) > 0 {
-				name += "." + r.APIGroup
-			}
-			if _, err := fmt.Fprintf(w, "%s\n", name); err != nil {
-				errs = append(errs, err)
-			}
-		case "wide":
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%s\t%v\t%v\n",
-				r.APIResource.Name,
-				strings.Join(r.APIResource.ShortNames, ","),
-				r.APIGroupVersion,
-				r.APIResource.Namespaced,
-				r.APIResource.Kind,
-				strings.Join(r.APIResource.Verbs, ","),
-				strings.Join(r.APIResource.Categories, ",")); err != nil {
-				errs = append(errs, err)
-			}
-		case "":
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%s\n",
-				r.APIResource.Name,
-				strings.Join(r.APIResource.ShortNames, ","),
-				r.APIGroupVersion,
-				r.APIResource.Namespaced,
-				r.APIResource.Kind); err != nil {
-				errs = append(errs, err)
-			}
-		}
+	if err := o.PrintObj(rl, w); err != nil {
+		errs = append(errs, err)
 	}
 
 	if len(errs) > 0 {
