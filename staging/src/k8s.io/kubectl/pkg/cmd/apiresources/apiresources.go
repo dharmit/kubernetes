@@ -202,6 +202,7 @@ func (o *APIResourceOptions) RunAPIResources() error {
 		rl.APIResources = append(rl.APIResources, r.APIResources...)
 	}
 
+	resources = []groupResource{}
 	for _, list := range lists {
 		if len(list.APIResources) == 0 {
 			continue
@@ -247,15 +248,6 @@ func (o *APIResourceOptions) RunAPIResources() error {
 		return errors.NewAggregate(errs)
 	}
 	return nil
-}
-
-func printContextHeaders(out io.Writer, output string) error {
-	columnNames := []string{"NAME", "SHORTNAMES", "APIVERSION", "NAMESPACED", "KIND"}
-	if output == "wide" {
-		columnNames = append(columnNames, "VERBS", "CATEGORIES")
-	}
-	_, err := fmt.Fprintf(out, "%s\n", strings.Join(columnNames, "\t"))
-	return err
 }
 
 type sortableResource struct {

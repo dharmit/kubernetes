@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/printers"
 )
@@ -79,6 +80,7 @@ func (p APIResourcesPrinter) PrintObj(_ runtime.Object, writer io.Writer) error 
 			return err
 		}
 	}
+	var errs []error
 	for _, r := range resources {
 		switch p.outputFormat {
 		case "name":
@@ -87,8 +89,7 @@ func (p APIResourcesPrinter) PrintObj(_ runtime.Object, writer io.Writer) error 
 				name += "." + r.APIGroup
 			}
 			if _, err := fmt.Fprintf(writer, "%s\n", name); err != nil {
-				//errs = append(errs, err)
-				return err
+				errs = append(errs, err)
 			}
 		case "wide":
 			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%v\t%s\t%v\t%v\n",
@@ -99,8 +100,7 @@ func (p APIResourcesPrinter) PrintObj(_ runtime.Object, writer io.Writer) error 
 				r.APIResource.Kind,
 				strings.Join(r.APIResource.Verbs, ","),
 				strings.Join(r.APIResource.Categories, ",")); err != nil {
-				//errs = append(errs, err)
-				return err
+				errs = append(errs, err)
 			}
 		case "":
 			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%v\t%s\n",
@@ -109,13 +109,24 @@ func (p APIResourcesPrinter) PrintObj(_ runtime.Object, writer io.Writer) error 
 				r.APIGroupVersion,
 				r.APIResource.Namespaced,
 				r.APIResource.Kind); err != nil {
-				//errs = append(errs, err)
-				return err
+				errs = append(errs, err)
 			}
 
 		}
 	}
+	if len(errs) > 0 {
+		return errors.NewAggregate(errs)
+	}
 	return nil
+}
+
+func printContextHeaders(out io.Writer, output string) error {
+	columnNames := []string{"NAME", "SHORTNAMES", "APIVERSION", "NAMESPACED", "KIND"}
+	if output == "wide" {
+		columnNames = append(columnNames, "VERBS", "CATEGORIES")
+	}
+	_, err := fmt.Fprintf(out, "%s\n", strings.Join(columnNames, "\t"))
+	return err
 }
 
 func NewAPIResourcesPrinter(format string, noHeaders bool) *APIResourcesPrinter {

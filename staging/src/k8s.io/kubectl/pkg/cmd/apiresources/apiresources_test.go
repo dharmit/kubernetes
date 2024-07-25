@@ -218,70 +218,71 @@ bazzes.somegroup
 				cmd.Flags().Set("output", "json")
 			},
 			expectedOutput: `{
-	"kind": "v1",
-	"apiVersion": "APIResourceList",
-	"groupVersion": "",
-	"resources": [
-		{
-			"name": "foos",
-			"singularName": "",
-			"namespaced": false,
-			"kind": "Foo",
-			"verbs": [
-				"get",
-				"list"
-			],
-			"shortNames": [
-				"f",
-				"fo"
-			],
-			"categories": [
-				"some-category"
-			]
-		},
-		{
-			"name": "bars",
-			"singularName": "",
-			"namespaced": true,
-			"kind": "Bar",
-			"verbs": [
-				"get",
-				"list",
-				"create"
-			]
-		},
-		{
-			"name": "bazzes",
-			"singularName": "",
-			"namespaced": true,
-			"kind": "Baz",
-			"verbs": [
-				"get",
-				"list",
-				"create",
-				"delete"
-			],
-			"shortNames": [
-				"b"
-			],
-			"categories": [
-				"some-category",
-				"another-category"
-			]
-		},
-		{
-			"name": "NoVerbs",
-			"singularName": "",
-			"namespaced": true,
-			"kind": "NoVerbs",
-			"verbs": [],
-			"shortNames": [
-				"b"
-			]
-		}
-	]
+    "kind": "v1",
+    "apiVersion": "APIResourceList",
+    "groupVersion": "",
+    "resources": [
+        {
+            "name": "foos",
+            "singularName": "",
+            "namespaced": false,
+            "kind": "Foo",
+            "verbs": [
+                "get",
+                "list"
+            ],
+            "shortNames": [
+                "f",
+                "fo"
+            ],
+            "categories": [
+                "some-category"
+            ]
+        },
+        {
+            "name": "bars",
+            "singularName": "",
+            "namespaced": true,
+            "kind": "Bar",
+            "verbs": [
+                "get",
+                "list",
+                "create"
+            ]
+        },
+        {
+            "name": "bazzes",
+            "singularName": "",
+            "namespaced": true,
+            "kind": "Baz",
+            "verbs": [
+                "get",
+                "list",
+                "create",
+                "delete"
+            ],
+            "shortNames": [
+                "b"
+            ],
+            "categories": [
+                "some-category",
+                "another-category"
+            ]
+        },
+        {
+            "name": "NoVerbs",
+            "singularName": "",
+            "namespaced": true,
+            "kind": "NoVerbs",
+            "verbs": [],
+            "shortNames": [
+                "b"
+            ]
+        }
+    ]
 }
 `,
+			expectedInvalidations: 1,
 		},
 		{
 			name: "namespaced",
@@ -375,7 +376,6 @@ bazzes   b            somegroup/v1   true         Baz
 	}
 
 	for _, tc := range testCases {
-		resources = []groupResource{} // clean the package level variable to avoid stacking up of resources
 		t.Run(tc.name, func(tt *testing.T) {
 			dc.Invalidations = 0
 			ioStreams, _, out, errOut := genericiooptions.NewTestIOStreams()
