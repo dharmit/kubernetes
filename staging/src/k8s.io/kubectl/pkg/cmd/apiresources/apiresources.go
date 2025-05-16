@@ -27,13 +27,14 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/client-go/discovery"
+	"k8s.io/kubectl/pkg/cmd/get"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
+	"k8s.io/kubectl/pkg/scheme"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 )
@@ -66,7 +67,6 @@ type APIResourceOptions struct {
 	APIGroup   string
 	Namespaced bool
 	Verbs      []string
-	NoHeaders  bool
 	Cached     bool
 	Categories []string
 
@@ -89,36 +89,80 @@ type groupResource struct {
 
 type PrintFlags struct {
 	JSONYamlPrintFlags *genericclioptions.JSONYamlPrintFlags
+	NamePrintFlags     *genericclioptions.NamePrintFlags
+	HumanReadableFlags *get.HumanPrintFlags
 
+	NoHeaders    *bool
 	OutputFormat *string
 }
 
 func NewPrintFlags() *PrintFlags {
 	outputFormat := ""
+	noHeaders := false
 
 	return &PrintFlags{
 		OutputFormat:       &outputFormat,
+		NoHeaders:          &noHeaders,
 		JSONYamlPrintFlags: genericclioptions.NewJSONYamlPrintFlags(),
+		NamePrintFlags:     genericclioptions.NewNamePrintFlags(""),
+		HumanReadableFlags: APIResourcesHumanReadableFlags(),
+	}
+}
+
+func APIResourcesHumanReadableFlags() *get.HumanPrintFlags {
+	return &get.HumanPrintFlags{
+		SortBy:        nil,
+		NoHeaders:     false,
+		WithNamespace: false,
 	}
 }
 
 func (f *PrintFlags) AllowedFormats() []string {
 	ret := []string{}
 	ret = append(ret, f.JSONYamlPrintFlags.AllowedFormats()...)
-	ret = append(ret, []string{"wide", "name"}...)
+	ret = append(ret, f.NamePrintFlags.AllowedFormats()...)
+	ret = append(ret, f.HumanReadableFlags.AllowedFormats()...)
 	return ret
 }
 
 func (f *PrintFlags) AddFlags(cmd *cobra.Command) {
 	f.JSONYamlPrintFlags.AddFlags(cmd)
+	f.HumanReadableFlags.AddFlags(cmd)
+	f.NamePrintFlags.AddFlags(cmd)
 
 	if f.OutputFormat != nil {
 		cmd.Flags().StringVarP(f.OutputFormat, "output", "o", *f.OutputFormat, fmt.Sprintf("Output format. One of: (%s).", strings.Join(f.AllowedFormats(), ", ")))
 	}
+	if f.NoHeaders != nil {
+		cmd.Flags().BoolVar(f.NoHeaders, "no-headers", *f.NoHeaders, "When using the default or custom-column output format, don't print headers (default print headers).")
+	}
 }
 
 func (f *PrintFlags) ToPrinter() (printers.ResourcePrinter, error) {
-	return nil, nil
+	outputFormat := ""
+	if f.OutputFormat != nil {
+		outputFormat = *f.OutputFormat
+	}
+
+	noHeaders := false
+	if f.NoHeaders != nil {
+		noHeaders = *f.NoHeaders
+	}
+	f.HumanReadableFlags.NoHeaders = noHeaders
+
+	if p, err := f.JSONYamlPrintFlags.ToPrinter(outputFormat); !genericclioptions.IsNoCompatiblePrinterError(err) {
+		return p, err
+	}
+
+	if p, err := f.HumanReadableFlags.ToPrinter(outputFormat); !genericclioptions.IsNoCompatiblePrinterError(err) {
+		return p, err
+	}
+
+	if p, err := f.NamePrintFlags.ToPrinter(outputFormat); !genericclioptions.IsNoCompatiblePrinterError(err) {
+		return p, err
+	}
+
+	return nil, genericclioptions.NoCompatiblePrinterError{OutputFormat: &outputFormat, AllowedFormats: f.AllowedFormats()}
 }
 
 // NewAPIResourceOptions creates the options for APIResource
@@ -146,13 +190,12 @@ func NewCmdAPIResources(restClientGetter genericclioptions.RESTClientGetter, ioS
 		},
 	}
 
-	cmd.Flags().BoolVar(&o.NoHeaders, "no-headers", o.NoHeaders, "When using the default or custom-column output format, don't print headers (default print headers).")
 	o.PrintFlags.AddFlags(cmd)
 
 	cmd.Flags().StringVar(&o.APIGroup, "api-group", o.APIGroup, "Limit to resources in the specified API group.")
 	cmd.Flags().BoolVar(&o.Namespaced, "namespaced", o.Namespaced, "If false, non-namespaced resources will be returned, otherwise returning namespaced resources by default.")
 	cmd.Flags().StringSliceVar(&o.Verbs, "verbs", o.Verbs, "Limit to resources that support the specified verbs.")
-	cmd.Flags().StringVar(&o.SortBy, "sort-by", o.SortBy, "If non-empty, sort list of resources using specified field. The field can be either 'name' or 'kind'.")
+	//cmd.Flags().StringVar(&o.SortBy, "sort-by", o.SortBy, "If non-empty, sort list of resources using specified field. The field can be either 'name' or 'kind'.")
 	cmd.Flags().BoolVar(&o.Cached, "cached", o.Cached, "Use the cached list of resources if available.")
 	cmd.Flags().StringSliceVar(&o.Categories, "categories", o.Categories, "Limit to resources that belong to the specified categories.")
 	return cmd
@@ -185,17 +228,22 @@ func (o *APIResourceOptions) Complete(restClientGetter genericclioptions.RESTCli
 	o.nsChanged = cmd.Flags().Changed("namespaced")
 
 	var printer printers.ResourcePrinter
-	/*if o.PrintFlags.OutputFormat != nil {
-		printer, err = o.PrintFlags.JSONYamlPrintFlags.ToPrinter(*o.PrintFlags.OutputFormat)
+	if o.PrintFlags.OutputFormat != nil {
+		printer, err = o.PrintFlags.ToPrinter()
 		if err != nil {
-			// user didn't request json or yaml
-			fmt.Println(err)
+			return err
 		}
+
+		printer, err = printers.NewTypeSetter(scheme.Scheme).WrapToPrinter(printer, nil)
+		if err != nil {
+			return err
+		}
+
 		o.PrintObj = func(object runtime.Object, out io.Writer) error {
 			return printer.PrintObj(object, out)
 		}
-	}*/
-	switch *o.PrintFlags.OutputFormat {
+	}
+	/*switch *o.PrintFlags.OutputFormat {
 	case "json", "yaml":
 		// ignore the error because case already ensures running this code if value is json or yaml
 		printer, _ = o.PrintFlags.JSONYamlPrintFlags.ToPrinter(*o.PrintFlags.OutputFormat)
@@ -205,7 +253,7 @@ func (o *APIResourceOptions) Complete(restClientGetter genericclioptions.RESTCli
 	case "", "wide", "name":
 	default:
 		return fmt.Errorf("unknown output format: %s", *o.PrintFlags.OutputFormat)
-	}
+	}*/
 
 	return nil
 }
@@ -276,27 +324,25 @@ func (o *APIResourceOptions) RunAPIResources() error {
 		allResources = append(allResources, apiList)
 	}
 
-	if !o.NoHeaders && (o.PrintFlags.OutputFormat == nil || *o.PrintFlags.OutputFormat == "" || *o.PrintFlags.OutputFormat == "wide") {
+	if !*o.PrintFlags.NoHeaders && (o.PrintFlags.OutputFormat == nil || *o.PrintFlags.OutputFormat == "" || *o.PrintFlags.OutputFormat == "wide") {
 		if err = printContextHeaders(w, *o.PrintFlags.OutputFormat); err != nil {
 			return err
 		}
 	}
 
-	if *o.PrintFlags.OutputFormat == "json" || *o.PrintFlags.OutputFormat == "yaml" {
-		flatList := &metav1.APIResourceList{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: allResources[0].APIVersion,
-				Kind:       allResources[0].Kind,
-			},
-		}
-		for _, resource := range allResources {
-			flatList.APIResources = append(flatList.APIResources, resource.APIResources...)
-		}
-		return o.PrintObj(flatList, w)
+	flatList := &metav1.APIResourceList{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: allResources[0].APIVersion,
+			Kind:       allResources[0].Kind,
+		},
 	}
+	for _, resource := range allResources {
+		flatList.APIResources = append(flatList.APIResources, resource.APIResources...)
+	}
+	//return o.PrintObj(flatList, w)
 
 	sort.Stable(sortableResource{resources, o.SortBy})
-	for _, r := range resources {
+	/*for _, r := range resources {
 		switch *o.PrintFlags.OutputFormat {
 		case "name":
 			name := r.APIResource.Name
@@ -327,12 +373,14 @@ func (o *APIResourceOptions) RunAPIResources() error {
 				errs = append(errs, err)
 			}
 		}
-	}
+	}*/
 
-	if len(errs) > 0 {
+	/*if len(errs) > 0 {
 		return errors.NewAggregate(errs)
 	}
-	return nil
+	return nil*/
+
+	return o.PrintObj(flatList, w)
 }
 
 func printContextHeaders(out io.Writer, output string) error {
